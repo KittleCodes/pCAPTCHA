@@ -6,9 +6,9 @@ pCAPTCHA is an interactive CAPTCHA solution that challenges users to drag a puzz
 
 - Dynamic puzzle generation: Each CAPTCHA instance creates a new puzzle piece on a background image.
 - Interactive interface: Users can drag and drop a puzzle piece to verify their actions.
+- Verify captchas have been completed using JWT
 
 ## Todo
-- Add token to be used to verify captcha completion
 - Examine user mouse movements
 - Add rate limits
 

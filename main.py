@@ -1,5 +1,7 @@
 import os
 import random
+import time
+import jwt
 import requests
 from io import BytesIO
 from flask import Flask, jsonify, request, Response
@@ -11,9 +13,13 @@ app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///captchas.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app)
 
+# Secret key for JWT encoding/decoding (keep this secure!)
+SECRET_KEY = 'your_secret_key'
+
 # Example usage
 @app.route('/')
 def index():
+    """Render the index page with the pCAPTCHA."""
     return '''
 <!DOCTYPE html>
 <html lang="en">
@@ -152,6 +158,10 @@ def pCaptcha_js():
             }});
             const data = await response.json();
             alert(data.message);
+            if (data.success) {{
+                console.log("Token:", data.token);
+                document.cookie = "captcha_token=" + data.token;
+            }}
         }}
     }})();
     '''
@@ -159,6 +169,7 @@ def pCaptcha_js():
 
 @app.route('/generate_puzzle_piece', methods=['POST'])
 def generate_puzzle_piece():
+    """Generate a CAPTCHA puzzle piece."""
     # Generate a random position for the puzzle piece
     correct_x = random.randint(25, 200)  
     correct_y = random.randint(25, 200)  
@@ -210,10 +221,10 @@ def generate_puzzle_piece():
 
 @app.route('/check_position', methods=['POST'])
 def check_position():
+    """Check the position of the puzzle piece."""
     # Get the data from the request
     data = request.json
     captcha_id = data.get('captcha_id')
-    # The final position of the puzzle piece
     final_x = data.get('x')
     final_y = data.get('y')
 
@@ -227,16 +238,60 @@ def check_position():
     is_correct = (abs(final_x - captcha.correct_x) <= tolerance and
                   abs(final_y - captcha.correct_y) <= tolerance)
 
-    # Delete the CAPTCHA instance from the database
+    # Generate a JWT if the CAPTCHA is solved correctly
     if is_correct:
-        db.session.delete(captcha)
-        db.session.commit()
+        # Create the payload
+        payload = {
+            'captcha_id': captcha.id,
+            'user_ip': request.remote_addr,  # Get the user's IP address
+            'user_agent': request.headers.get('User-Agent'),  # Get the user's agent
+            'exp': time.time() + 300  # Set an expiration time for the token (e.g., 5 minutes)
+        }
+        
+        # Encode the JWT
+        token = jwt.encode(payload, SECRET_KEY, algorithm='HS256')
 
-    # Return the result to the client
+        return jsonify({
+            "success": True,
+            "message": "Correct position!",
+            "token": token  # Return the JWT token to the client
+        })
+
+    # Return the result to the client if incorrect
     return jsonify({
-        "success": is_correct,
-        "message": "Correct position!" if is_correct else "Incorrect position!"
+        "success": False,
+        "message": "Incorrect position!"
     })
+
+@app.route('/verify_captcha', methods=['POST'])
+def verify_captcha():
+    """Verify the CAPTCHA token."""
+    # Get the token, IP address, and user agent from the request
+    token = request.json.get('token')
+    ip_address = request.json.get('ip-address')
+    user_agent = request.json.get('user-agent')
+    
+    # Check if the token is provided
+    if not token:
+        return jsonify({"success": False, "message": "No token provided!"})
+
+    try:
+        # Decode the JWT
+        payload = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])
+        captcha_id = payload['captcha_id']
+        user_ip = payload['user_ip']
+        user_agent = payload['user_agent']
+
+        # Check if the IP address and user agent match the ones in the token
+        if user_ip != ip_address and user_agent != user_agent:
+            return jsonify({"success": False, "message": "Identity mismatch!"})
+
+        return jsonify({"success": True, "message": "CAPTCHA verified!", "captcha_id": captcha_id})
+
+    except jwt.ExpiredSignatureError:
+        return jsonify({"success": False, "message": "Token has expired!"})
+    except jwt.InvalidTokenError:
+        return jsonify({"success": False, "message": "Invalid token!"})
 
 if __name__ == '__main__':
     # Create the database tables
