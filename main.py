@@ -222,7 +222,7 @@ def generate_puzzle_piece():
     # Piece data
     piece_size = 50
     outline_color = random.choice(neon_colors)
-    fill = (25, 25, 25, 25)
+    fill = random.choice(neon_colors)[:3] + (15,)
 
     # Create the puzzle piece
     piece_layer = Image.new('RGBA', background.size, (0, 0, 0, 0))
