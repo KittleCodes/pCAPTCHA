@@ -1,21 +1,23 @@
 import os
 import random
-import time
+import datetime
 import jwt
 import requests
 import random
+import uuid
 from io import BytesIO
-from flask import Flask, jsonify, request, Response
+from flask import Flask, jsonify, request, Response, session
 from PIL import Image, ImageDraw, ImageFilter
-from models import db, CAPTCHA
+from models import db, CAPTCHA, CAPTCHA_Analytics
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///captchas.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app)
 
-# Secret key for JWT encoding/decoding (keep this secure!)
-SECRET_KEY = 'your_secret_key'
+# Change both of these and keep them secure
+app.secret_key = 'your_secret_key' # Secret key for the Flask app
+SECRET_KEY = 'your_secret_key' # Secret key for JWT encoding/decoding
 
 # List of neon colors for the puzzle piece
 neon_colors = [
@@ -51,6 +53,13 @@ neon_colors = [
     (255, 140, 0, 200)    # Neon Dark Orange
 ]
 
+# Initialize CAPTCHA Analytics if the session is new
+def init_captcha_analytics():
+    if 'session_id' not in session:
+        session['session_id'] = str(uuid.uuid4())
+        analytics = CAPTCHA_Analytics(session_id=session['session_id'])
+        db.session.add(analytics)
+        db.session.commit()
 
 # Example usage
 @app.route('/')
@@ -75,137 +84,143 @@ def index():
 @app.route('/pCaptcha.js', methods=['GET'])
 def pCaptcha_js():
     """Serve the dynamic pCaptcha.js file."""
+    # Initialize analytics on script load
+    init_captcha_analytics()
     base_url = request.url_root
     js_content = f'''
-    (function() {{
+(function() {{
+    const container = document.getElementById('captchaContainer');
+    const button = document.createElement('button');
+    button.innerText = 'Click to verify';
+    button.style.backgroundColor = '#4285f4'; 
+    button.style.color = 'white';
+    button.style.border = 'none';
+    button.style.padding = '10px 20px';
+    button.style.cursor = 'pointer';
+    button.style.borderRadius = '5px';
+    container.appendChild(button);
 
-        const container = document.getElementById('captchaContainer');
+    const canvas = document.createElement('canvas');
+    canvas.id = 'captchaCanvas';
+    canvas.width = 250;  
+    canvas.height = 250; 
+    canvas.style.border = '1px solid #ccc';
+    canvas.style.display = 'none'; 
+    container.appendChild(canvas);
 
-        const button = document.createElement('button');
-        button.innerText = 'Click to verify';
-        button.style.backgroundColor = '#4285f4'; 
-        button.style.color = 'white';
-        button.style.border = 'none';
-        button.style.padding = '10px 20px';
-        button.style.cursor = 'pointer';
-        button.style.borderRadius = '5px';
-        container.appendChild(button);
+    let captchaId = null;
+    const pieceSize = 50; 
+    let isDragging = false;
+    let draggablePiecePosition = {{ x: 0, y: 0 }};
+    let mouseMovement = [];  // Array to store mouse movements with timestamps
+    let backgroundImage = new Image();
 
-        const canvas = document.createElement('canvas');
-        canvas.id = 'captchaCanvas';
-        canvas.width = 250;  
-        canvas.height = 250; 
-        canvas.style.border = '1px solid #ccc';
-        canvas.style.display = 'none'; 
-        container.appendChild(canvas);
-
-        let captchaId = null;
-        const pieceSize = 50; 
-        let isDragging = false;
-        let draggablePiecePosition = {{ x: 0, y: 0 }};
-        let backgroundImage = new Image();
-
-        async function generatePuzzlePiece() {{
-            const response = await fetch('{base_url}generate_puzzle_piece', {{
-                method: 'POST',
-                headers: {{ 'Content-Type': 'application/json' }}
-            }});
-            const data = await response.json();
-            if (data.success) {{
-                captchaId = data.captcha_id;
-
-                backgroundImage.src = data.image;
-                backgroundImage.onload = drawCanvas;
-                canvas.style.display = 'block'; 
-            }} else {{
-                console.error(data.message);
-            }}
+    async function generatePuzzlePiece() {{
+        const response = await fetch('{base_url}generate_puzzle_piece', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }}
+        }});
+        const data = await response.json();
+        if (data.success) {{
+            captchaId = data.captcha_id;
+            backgroundImage.src = data.image;
+            backgroundImage.onload = drawCanvas;
+            canvas.style.display = 'block'; 
+        }} else {{
+            console.error(data.message);
         }}
+    }}
 
-        function drawCanvas() {{
-            const ctx = canvas.getContext('2d');
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(backgroundImage, 0, 0, canvas.width, canvas.height);
-            drawDraggablePiece(draggablePiecePosition.x, draggablePiecePosition.y);
+    function drawCanvas() {{
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(backgroundImage, 0, 0, canvas.width, canvas.height);
+        drawDraggablePiece(draggablePiecePosition.x, draggablePiecePosition.y);
+    }}
+
+    function drawDraggablePiece(x, y) {{
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = 'rgba(0, 255, 0, 1)'; 
+        ctx.fillRect(x, y, pieceSize, pieceSize);
+        ctx.strokeStyle = 'black';
+        ctx.strokeRect(x, y, pieceSize, pieceSize);
+    }}
+
+    button.onclick = function() {{
+        generatePuzzlePiece(); 
+    }};
+
+    canvas.onmousedown = function(event) {{
+        const mouseX = event.offsetX;
+        const mouseY = event.offsetY;
+        const isInPiece = (mouseX >= draggablePiecePosition.x && mouseX <= draggablePiecePosition.x + pieceSize &&
+                           mouseY >= draggablePiecePosition.y && mouseY <= draggablePiecePosition.y + pieceSize);
+
+        if (isInPiece) {{
+            isDragging = true;
+            canvas.style.cursor = 'grabbing';
+            canvas.onmousemove = onMouseMove;
         }}
+    }};
 
-        function drawDraggablePiece(x, y) {{
-            const ctx = canvas.getContext('2d');
-            ctx.fillStyle = 'rgba(0, 255, 0, 1)'; 
-            ctx.fillRect(x, y, pieceSize, pieceSize);
-            ctx.strokeStyle = 'black';
-            ctx.strokeRect(x, y, pieceSize, pieceSize);
-        }}
-
-        button.onclick = function() {{
-            generatePuzzlePiece(); 
-        }};
-
-        canvas.onmousedown = function(event) {{
+    function onMouseMove(event) {{
+        if (isDragging) {{
             const mouseX = event.offsetX;
             const mouseY = event.offsetY;
-            const isInPiece = (mouseX >= draggablePiecePosition.x && mouseX <= draggablePiecePosition.x + pieceSize &&
-                               mouseY >= draggablePiecePosition.y && mouseY <= draggablePiecePosition.y + pieceSize);
 
-            if (isInPiece) {{
-                isDragging = true;
-                canvas.style.cursor = 'grabbing';
-                canvas.onmousemove = onMouseMove;
-            }}
-        }};
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(backgroundImage, 0, 0, canvas.width, canvas.height); 
 
-        function onMouseMove(event) {{
-            if (isDragging) {{
-                const mouseX = event.offsetX;
-                const mouseY = event.offsetY;
+            draggablePiecePosition.x = mouseX - pieceSize / 2;
+            draggablePiecePosition.y = mouseY - pieceSize / 2;
 
-                const ctx = canvas.getContext('2d');
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                ctx.drawImage(backgroundImage, 0, 0, canvas.width, canvas.height); 
+            const timestamp = Date.now();
+            mouseMovement.push({{ x: mouseX, y: mouseY, time: timestamp }});
 
-                draggablePiecePosition.x = mouseX - pieceSize / 2;
-                draggablePiecePosition.y = mouseY - pieceSize / 2;
-
-                drawDraggablePiece(draggablePiecePosition.x, draggablePiecePosition.y);
-            }}
+            drawDraggablePiece(draggablePiecePosition.x, draggablePiecePosition.y);
         }}
+    }}
 
-        canvas.onmouseup = function(event) {{
-            if (isDragging) {{
-                const finalX = draggablePiecePosition.x;
-                const finalY = draggablePiecePosition.y;
-                checkPosition(finalX, finalY);
-                isDragging = false;
-                canvas.onmousemove = null;  
-                canvas.style.cursor = 'default';
-            }}
-        }};
-
-        async function checkPosition(finalX, finalY) {{
-
-            const response = await fetch('{base_url}check_position', {{
-                method: 'POST',
-                headers: {{ 'Content-Type': 'application/json' }},
-                body: JSON.stringify({{
-                    captcha_id: captchaId,
-                    x: finalX,
-                    y: finalY
-                }})
-            }});
-            const data = await response.json();
-            alert(data.message);
-            if (data.success) {{
-                console.log("Token:", data.token);
-                document.cookie = "captcha_token=" + data.token;
-            }}
+    canvas.onmouseup = function(event) {{
+        if (isDragging) {{
+            const finalX = draggablePiecePosition.x;
+            const finalY = draggablePiecePosition.y;
+            checkPosition(finalX, finalY);
+            isDragging = false;
+            canvas.onmousemove = null;  
+            canvas.style.cursor = 'default';
         }}
-    }})();
-    '''
+    }};
+
+    async function checkPosition(finalX, finalY) {{
+        const response = await fetch('{base_url}check_position', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{
+                captcha_id: captchaId,
+                x: finalX,
+                y: finalY,
+                mouse_movements: mouseMovement
+            }})
+        }});
+        const data = await response.json();
+        alert(data.message);
+        if (data.success) {{
+            console.log("Token:", data.token);
+            document.cookie = "captcha_token=" + data.token;
+        }}
+    }}
+}})();
+'''
     return Response(js_content, mimetype='application/javascript')
 
 @app.route('/generate_puzzle_piece', methods=['POST'])
 def generate_puzzle_piece():
     """Generate a CAPTCHA puzzle piece."""
+    # Ensure analytics is initialized for the session
+    init_captcha_analytics()
+
     # Generate a random position for the puzzle piece
     correct_x = random.randint(25, 200)  
     correct_y = random.randint(25, 200)  
@@ -213,6 +228,25 @@ def generate_puzzle_piece():
     # Save the CAPTCHA instance to the database to be later checked
     captcha = CAPTCHA(correct_x=correct_x, correct_y=correct_y)
     db.session.add(captcha)
+
+    # Increment captchas_generated count for the analytics
+    analytics = db.session.query(CAPTCHA_Analytics).filter_by(session_id=session['session_id']).first()
+    analytics.captchas_generated += 1
+
+    # Create a new attempt for the CAPTCHA
+    new_attempt = {
+        "presented_at": datetime.datetime.utcnow().isoformat(),
+        "completed_at": None,
+        "success": None,
+        "time_taken": None,
+        "mouse_movements": []
+    }
+
+    # Append the new attempt to the attempts list
+    if analytics.attempts is None:
+        analytics.attempts = []
+    analytics.attempts.append(new_attempt)
+
     db.session.commit()
 
     # Retrieve a random background image for the puzzle with a size of 250x250
@@ -240,7 +274,7 @@ def generate_puzzle_piece():
 
     # Apply a Gaussian blur to the piece layer to fight against sharp edges
     blurred_piece = piece_layer.filter(ImageFilter.GaussianBlur(radius=5))  
-    
+
     # Combine the background and the blurred piece
     img = Image.alpha_composite(background, blurred_piece)
 
@@ -257,47 +291,80 @@ def generate_puzzle_piece():
 
 @app.route('/check_position', methods=['POST'])
 def check_position():
-    """Check the position of the puzzle piece."""
+    """Check the position of the dragged puzzle piece."""
     # Get the data from the request
-    data = request.json
+    data = request.get_json()
     captcha_id = data.get('captcha_id')
-    final_x = data.get('x')
-    final_y = data.get('y')
+    x = data.get('x')
+    y = data.get('y')
+    mouse_movements = data.get('mouse_movements')
 
-    # Retrieve the CAPTCHA instance from the database
-    captcha = db.session.query(CAPTCHA).filter_by(id=captcha_id).first()
+    # Retrieve the CAPTCHA from the database
+    captcha = CAPTCHA.query.get(captcha_id)
+
     if not captcha:
-        return jsonify({"success": False, "message": "CAPTCHA not found!"})
+        return jsonify({'success': False, 'message': 'CAPTCHA not found'}), 404
 
-    # Check if the final position is correct with a small tolerance
-    tolerance = 10
-    is_correct = (abs(final_x - captcha.correct_x) <= tolerance and
-                  abs(final_y - captcha.correct_y) <= tolerance)
+    tolerance = 10  # Allowable deviation for position
+    correct_x = captcha.correct_x
+    correct_y = captcha.correct_y
 
-    # Generate a JWT if the CAPTCHA is solved correctly
-    if is_correct:
-        # Create the payload
-        payload = {
-            'captcha_id': captcha.id,
-            'user_ip': request.remote_addr,  # Get the user's IP address
-            'user_agent': request.headers.get('User-Agent'),  # Get the user's agent
-            'exp': time.time() + 300  # Set an expiration time for the token (e.g., 5 minutes)
-        }
+    # Check if the piece is within the allowed tolerance of the correct position
+    if abs(x - correct_x) <= tolerance and abs(y - correct_y) <= tolerance:
+        # Success! Generate a JWT token
+        token = jwt.encode({'captcha_id': captcha_id, 'session_id': session['session_id']}, SECRET_KEY, algorithm='HS256')
+
+        # Increment captchas_solved count for the analytics
+        analytics = db.session.query(CAPTCHA_Analytics).filter_by(session_id=session['session_id']).first()
+
+        if analytics is not None:
+            analytics.captchas_solved += 1
+
+            # Update the last attempt with the completion time and success status
+            if analytics.attempts:  # Check if there are any attempts
+                last_attempt_index = -1  # Get the last attempt
+                last_attempt = analytics.attempts[last_attempt_index]
+
+                # Update the last attempt details
+                last_attempt["completed_at"] = datetime.datetime.utcnow().isoformat()
+                last_attempt["success"] = False
+                last_attempt["mouse_movements"] = mouse_movements
+
+                # Calculate the time taken to solve the CAPTCHA
+                presented_at = datetime.datetime.fromisoformat(last_attempt["presented_at"])
+                completed_at = datetime.datetime.fromisoformat(last_attempt["completed_at"])
+                last_attempt["time_taken"] = (completed_at - presented_at).total_seconds()
+
+                # Reassign the modified attempts list back to analytics
+                analytics.attempts[last_attempt_index] = last_attempt  # Ensure SQLAlchemy tracks this change
+
+                print(last_attempt)
+
+        db.session.commit()
+
+        return jsonify({'success': True, 'message': 'CAPTCHA solved!', 'token': token})
+
+    else:
+        # Increment captchas_failed count for the analytics
+        analytics = db.session.query(CAPTCHA_Analytics).filter_by(session_id=session['session_id']).first()
+        analytics.captchas_failed += 1
+
+        # Update the last attempt with the completion time and success status
+        last_attempt = analytics.attempts[-1]  # Get the last attempt
+        last_attempt["completed_at"] = datetime.datetime.utcnow().isoformat()
+        last_attempt["success"] = False
+        last_attempt["mouse_movements"] = mouse_movements
+        print(last_attempt)
         
-        # Encode the JWT
-        token = jwt.encode(payload, SECRET_KEY, algorithm='HS256')
+        # Calculate the time taken to solve the CAPTCHA
+        presented_at = datetime.datetime.fromisoformat(last_attempt["presented_at"])
+        completed_at = datetime.datetime.fromisoformat(last_attempt["completed_at"])
+        last_attempt["time_taken"] = (completed_at - presented_at).total_seconds()
+        print(last_attempt)
 
-        return jsonify({
-            "success": True,
-            "message": "Correct position!",
-            "token": token  # Return the JWT token to the client
-        })
+        db.session.commit()
 
-    # Return the result to the client if incorrect
-    return jsonify({
-        "success": False,
-        "message": "Incorrect position!"
-    })
+        return jsonify({'success': False, 'message': 'CAPTCHA failed. Please try again.'})
 
 @app.route('/verify_captcha', methods=['POST'])
 def verify_captcha():
