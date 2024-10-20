@@ -3,6 +3,7 @@ import random
 import time
 import jwt
 import requests
+import random
 from io import BytesIO
 from flask import Flask, jsonify, request, Response
 from PIL import Image, ImageDraw, ImageFilter
@@ -15,6 +16,41 @@ db.init_app(app)
 
 # Secret key for JWT encoding/decoding (keep this secure!)
 SECRET_KEY = 'your_secret_key'
+
+# List of neon colors for the puzzle piece
+neon_colors = [
+    (255, 0, 0, 200),     # Neon Red
+    (0, 255, 0, 200),     # Neon Green
+    (0, 0, 255, 200),     # Neon Blue
+    (255, 255, 0, 200),   # Neon Yellow
+    (255, 0, 255, 200),   # Neon Pink
+    (0, 255, 255, 200),   # Neon Cyan
+    (255, 165, 0, 200),   # Neon Orange
+    (255, 20, 147, 200),  # Neon Hot Pink
+    (191, 255, 0, 200),   # Neon Lime
+    (57, 255, 20, 200),   # Neon Green 2
+    (255, 105, 180, 200), # Neon Hot Pink 2
+    (127, 255, 0, 200),   # Neon Chartreuse
+    (0, 191, 255, 200),   # Neon Sky Blue
+    (255, 69, 0, 200),    # Neon Orange Red
+    (255, 0, 127, 200),   # Neon Deep Pink
+    (199, 21, 133, 200),  # Neon Medium Violet Red
+    (32, 178, 170, 200),  # Neon Light Sea Green
+    (173, 255, 47, 200),  # Neon Green Yellow
+    (100, 149, 237, 200), # Neon Cornflower Blue
+    (0, 255, 127, 200),   # Neon Spring Green
+    (220, 20, 60, 200),   # Neon Crimson
+    (148, 0, 211, 200),   # Neon Dark Violet
+    (255, 215, 0, 200),   # Neon Gold
+    (238, 130, 238, 200), # Neon Violet
+    (64, 224, 208, 200),  # Neon Turquoise
+    (144, 238, 144, 200), # Neon Light Green
+    (186, 85, 211, 200),  # Neon Medium Orchid
+    (0, 206, 209, 200),   # Neon Dark Turquoise
+    (123, 104, 238, 200), # Neon Medium Slate Blue
+    (255, 140, 0, 200)    # Neon Dark Orange
+]
+
 
 # Example usage
 @app.route('/')
@@ -185,7 +221,7 @@ def generate_puzzle_piece():
 
     # Piece data
     piece_size = 50
-    outline_color = (255, 0, 0, 200)
+    outline_color = random.choice(neon_colors)
     fill = (25, 25, 25, 25)
 
     # Create the puzzle piece
