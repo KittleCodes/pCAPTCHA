@@ -7,9 +7,10 @@ pCAPTCHA is an interactive CAPTCHA solution that challenges users to drag a puzz
 - Dynamic puzzle generation: Each CAPTCHA instance creates a new puzzle piece on a background image.
 - Interactive interface: Users can drag and drop a puzzle piece to verify their actions.
 - Verify captchas have been completed using JWT
+- Analytics gathering (sessions that include captchas made, solved, failed, regenerated, along with attempts to solve which include time created, time solved, if success or not, and mouse movements while dragging)
+- Analytics dashboard
 
 ## Todo
-- Examine user mouse movements
 - Add rate limits
 
 ## Technologies Used
@@ -60,6 +61,19 @@ pCAPTCHA is an interactive CAPTCHA solution that challenges users to drag a puzz
     ```
     ```
     <script src="/pCaptcha.js"></script>
+    ```
+
+## Dashboard Usage
+
+1. Start the Flask application:
+
+   ```
+   python dashboard.py
+   ```
+
+2. Visit the provided url
+    ```
+    127.0.0.1:5010
     ```
 
 ## API Endpoints
