@@ -327,7 +327,7 @@ def check_position():
 
                 # Update the last attempt details
                 last_attempt["completed_at"] = datetime.datetime.utcnow().isoformat()
-                last_attempt["success"] = False
+                last_attempt["success"] = True
                 last_attempt["mouse_movements"] = mouse_movements
 
                 # Calculate the time taken to solve the CAPTCHA
