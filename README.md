@@ -60,7 +60,7 @@ pCAPTCHA is an interactive CAPTCHA solution that challenges users to drag a puzz
     <div id="captchaContainer"></div>
     ```
     ```
-    <script src="/pCaptcha.js"></script>
+    <script src="<your-web-server-url>/pCaptcha.js"></script>
     ```
 
 ## Dashboard Usage
