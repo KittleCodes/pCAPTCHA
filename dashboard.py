@@ -1,20 +1,19 @@
-import datetime
 import base64
 import io
-import matplotlib.pyplot as plt
-from flask import Flask, jsonify, request, Response, session, render_template_string
-from models import db, CAPTCHA_Analytics
-from sqlalchemy import func, text
-from sqlalchemy_json.track import TrackedList
+import multiprocessing
+from flask import Flask, render_template_string
+from models import db, CAPTCHA_Analytics, CAPTCHA_Attempt
+from sqlalchemy import func, desc
+from PIL import Image, ImageDraw
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///captchas.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app)
 
-plt.switch_backend('Agg')
 
 def analyze_captcha_data():
+    """Retrieve captcha data from the database and calculate analytics for the dashboard."""
     # Query for total analytics data
     total_data = db.session.query(
         func.sum(CAPTCHA_Analytics.captchas_generated).label('total_generated'),
@@ -35,70 +34,57 @@ def analyze_captcha_data():
     avg_fails_per_session = total_failed / total_sessions
 
     # Find the most common generation time
-    generation_times = []
-    for record in db.session.query(CAPTCHA_Analytics.attempts).all():
-        for attempt in record.attempts:
-            presented_at = datetime.datetime.fromisoformat(attempt['presented_at'])
-            generation_times.append(presented_at.hour)
-            
     most_common_generation_time_hour = (
-        max(set(generation_times), key=generation_times.count) if generation_times else None
+        db.session.query(func.extract('hour', CAPTCHA_Attempt.presented_at).label('hour'), 
+                func.count(func.extract('hour', CAPTCHA_Attempt.presented_at)).label('count'))
+            .group_by(func.extract('hour', CAPTCHA_Attempt.presented_at))
+            .order_by(desc('count'))
+            .first()
     )
+    
+    most_common_generation_time_hour = most_common_generation_time_hour[0] if most_common_generation_time_hour is not None else None
 
-    # Find the most common generation time
-    regeneration_times = []
-    for record in db.session.query(CAPTCHA_Analytics.attempts).all():
-        for attempt in record.attempts:
-            if attempt['success'] == None:
-                presented_at = datetime.datetime.fromisoformat(attempt['presented_at'])
-                regeneration_times.append(presented_at.hour)
-
+    # Find the most common regeneration time
     most_common_regeneration_time_hour = (
-        max(set(regeneration_times), key=regeneration_times.count) if regeneration_times else None
+        db.session.query(func.extract('hour', CAPTCHA_Attempt.presented_at).label('hour'), 
+                func.count(func.extract('hour', CAPTCHA_Attempt.presented_at)).label('count'))
+            .filter(CAPTCHA_Attempt.completed_at is None)
+            .group_by(func.extract('hour', CAPTCHA_Attempt.presented_at))
+            .order_by(desc('count'))
+            .first()
     )
+    
+    most_common_regeneration_time_hour = most_common_regeneration_time_hour[0] if most_common_regeneration_time_hour is not None else None
 
     # Find the most common solving time
-    solve_times = []
-    for record in db.session.query(CAPTCHA_Analytics.attempts).all():
-        for attempt in record.attempts:
-            print(attempt['success'])
-            if 'presented_at' in attempt and 'completed_at' in attempt and attempt['success'] == True:
-                presented_at = datetime.datetime.fromisoformat(attempt['presented_at'])
-                solve_times.append(presented_at.hour)
-
     most_common_solve_time_hour = (
-        max(set(solve_times), key=solve_times.count) if solve_times else None
+        db.session.query(func.extract('hour', CAPTCHA_Attempt.completed_at).label('hour'), 
+                func.count(func.extract('hour', CAPTCHA_Attempt.completed_at)).label('count'))
+            .filter(CAPTCHA_Attempt.completed_at is not None, CAPTCHA_Attempt.success is True)
+            .group_by(func.extract('hour', CAPTCHA_Attempt.presented_at))
+            .order_by(desc('count'))
+            .first()
     )
     
-    # Find the most common fail time
-    fail_times = []
-    for record in db.session.query(CAPTCHA_Analytics.attempts).all():
-        for attempt in record.attempts:
-            print(attempt['success'])
-            if 'presented_at' in attempt and 'completed_at' in attempt and attempt['success'] == False:
-                presented_at = datetime.datetime.fromisoformat(attempt['presented_at'])
-                fail_times.append(presented_at.hour)
-
-    most_fail_solve_time_hour = (
-        max(set(fail_times), key=fail_times.count) if fail_times else None
+    most_common_solve_time_hour = most_common_solve_time_hour[0] if most_common_solve_time_hour is not None else None
+    
+    # Find the most common failing time
+    most_common_fail_time_hour = (
+        db.session.query(func.extract('hour', CAPTCHA_Attempt.completed_at).label('hour'), 
+                func.count(func.extract('hour', CAPTCHA_Attempt.completed_at)).label('count'))
+            .filter(CAPTCHA_Attempt.completed_at is not None, CAPTCHA_Attempt.success is False)
+            .group_by(func.extract('hour', CAPTCHA_Attempt.presented_at))
+            .order_by(desc('count'))
+            .first()
     )
+    
+    most_common_fail_time_hour = most_common_fail_time_hour[0] if most_common_fail_time_hour is not None else None
 
     # Calculate average time to solve
-    total_time_to_solve = sum(
-        (datetime.datetime.fromisoformat(attempt['completed_at']) - datetime.datetime.fromisoformat(attempt['presented_at'])).total_seconds()
-        for record in db.session.query(CAPTCHA_Analytics.attempts).all()
-        for attempt in record.attempts if 'presented_at' in attempt and 'completed_at' in attempt and attempt['success'] == True
-    )
-    
-    # Calculate average time to fail
-    total_time_to_fail = sum(
-        (datetime.datetime.fromisoformat(attempt['completed_at']) - datetime.datetime.fromisoformat(attempt['presented_at'])).total_seconds()
-        for record in db.session.query(CAPTCHA_Analytics.attempts).all()
-        for attempt in record.attempts if 'presented_at' in attempt and 'completed_at' in attempt and attempt['success'] == False
-    )
+    avg_time_to_solve = db.session.query(func.avg(CAPTCHA_Attempt.time_taken).label('average')).filter(CAPTCHA_Attempt.success == True).scalar()
 
-    avg_time_to_solve = total_time_to_solve / total_solved if total_solved else 0
-    avg_time_to_fail = total_time_to_fail / total_failed if total_failed else 0
+    # Calculate average time to fail
+    avg_time_to_fail = db.session.query(func.avg(CAPTCHA_Attempt.time_taken).label('average')).filter(CAPTCHA_Attempt.success == False).scalar()
 
     # Constructing results
     results = {
@@ -117,50 +103,62 @@ def analyze_captcha_data():
         },
         "pCAPTCHAs Failed": {
             "Average Fails Per Session": avg_fails_per_session,
-            "Most Common Time Of Fail": most_fail_solve_time_hour,
+            "Most Common Time Of Fail": most_common_fail_time_hour,
             "Average Time To Fail": avg_time_to_fail,
         },
     }
 
     return results
 
-def create_base64_image(mouse_movements: TrackedList, success):
+def process_mouse_movement(data):
+    """Check if data is there and then create image from it."""
+    mouse_movement, success = data
+    if mouse_movement is not None:
+        image_base64 = create_base64_image(mouse_movement, success)
+        return image_base64 if image_base64 else None
+    return None
+
+def create_base64_image(mouse_movements, success):
+    """Create an image showing the mouse path on the captcha, and changing the background color depending on success."""
     # Check if mouse_movements is empty
     if not mouse_movements:
         return None  # Handle empty input gracefully
 
-    # Extract x, y, and timestamp from the TrackedList
-    x, y, _ = zip(*[(m['x'], m['y'], m['time']) for m in mouse_movements])
+    # Extract x, y coordinates from the list
+    x, y = zip(*[(m['x'], m['y']) for m in mouse_movements])
     
-    # Create the plot with optimized settings
-    plt.figure(figsize=(5, 5), dpi=100, facecolor='green' if success else 'red')  # Adjust dpi for quality without excessive size
-    plt.plot(x, y, marker='o', markersize=2, linestyle='-', color='blue')  # Smaller markers and lines for efficiency
-    plt.title('Mouse Movements')
-    plt.xlabel('X-axis')
-    plt.ylabel('Y-axis')
-    plt.xlim(0,250)  # Add some padding
-    plt.ylim(0,250)  # Add some padding
-    
+    # Create a new image with a green background if success, red otherwise
+    background_color = (0, 255, 0) if success else (255, 0, 0)  # Green or Red
+    img = Image.new('RGB', (250, 250), background_color)
+
+    # Create a draw object
+    draw = ImageDraw.Draw(img)
+
+    # Draw the mouse movements
+    for x_coord, y_coord in zip(x, y):
+        if 0 <= x_coord < 250 and 0 <= y_coord < 250:  # Ensure coordinates are within bounds
+            draw.ellipse((x_coord-2, y_coord-2, x_coord+2, y_coord+2), fill='blue')  # Small circles
+
     # Save to a BytesIO object
     buf = io.BytesIO()
-    plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0.1)  # Tight layout to reduce whitespace
+    img.save(buf, format='PNG')
     buf.seek(0)
-    
+
     # Encode to Base64
-    image_base64 = base64.b64encode(buf.read()).decode('utf-8')
-    plt.close()
+    image_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+
     return image_base64
 
 @app.route('/')
 def index():
+    """Returns an overview of data from the analytics table."""
     total_pcaptchas_generated = db.session.query(func.sum(CAPTCHA_Analytics.captchas_generated)).scalar() or 0
     total_pcaptchas_solved = db.session.query(func.sum(CAPTCHA_Analytics.captchas_solved)).scalar() or 0
     total_pcaptchas_failed = db.session.query(func.sum(CAPTCHA_Analytics.captchas_failed)).scalar() or 0
     total_pcaptchas_regenerated = total_pcaptchas_generated - (total_pcaptchas_solved + total_pcaptchas_failed)
-    
+
     captcha_analysis = analyze_captcha_data()
-    print(captcha_analysis)
-    
+
     return f'''
 <!DOCTYPE html>
 <html data-bs-theme="light" lang="en">
@@ -171,7 +169,6 @@ def index():
     <title>pCAPTCHA</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
-    <link rel="stylesheet" href="assets/css/Navbar-Right-Links-Dark-icons.css">
 </head>
 
 <body style="background: var(--bs-secondary-text-emphasis);">
@@ -285,26 +282,23 @@ def index():
 
 @app.route('/sessions')
 def sessions():
+    """Display a list of sessions and their statics."""
     total_pcaptchas_generated = db.session.query(func.sum(CAPTCHA_Analytics.captchas_generated)).scalar() or 0
     total_pcaptchas_solved = db.session.query(func.sum(CAPTCHA_Analytics.captchas_solved)).scalar() or 0
     total_pcaptchas_failed = db.session.query(func.sum(CAPTCHA_Analytics.captchas_failed)).scalar() or 0
     total_pcaptchas_regenerated = total_pcaptchas_generated - (total_pcaptchas_solved + total_pcaptchas_failed)
-    
+
     session_records = db.session.query(CAPTCHA_Analytics).all()
-    
-    html_rows = ""
-    for record in session_records:
-        html_rows += f"""
-        <tr>
-            <td style="background: var(--bs-body-color);color: var(--bs-table-bg);border-color: var(--bs-table-color);">{record.session_id}</td>
-            <td style="background: var(--bs-body-color);color: var(--bs-table-bg);border-color: var(--bs-table-color);">{record.captchas_generated}</td>
-            <td style="background: var(--bs-body-color);color: var(--bs-table-bg);border-color: var(--bs-table-color);">{record.captchas_solved}</td>
-            <td style="background: var(--bs-body-color);color: var(--bs-table-bg);border-color: var(--bs-table-color);">{record.captchas_failed}</td>
-            <td style="background: var(--bs-body-color);color: var(--bs-table-bg);border-color: var(--bs-table-color);">{record.created_at} GMT</td>
-        </tr>
-        """
-    
-    return f'''
+
+    session_stats = {
+        'total_session_count': len(session_records),
+        'total_pcaptchas_generated': total_pcaptchas_generated,
+        'total_pcaptchas_solved': total_pcaptchas_solved,
+        'total_pcaptchas_failed': total_pcaptchas_failed,
+        'total_pcaptchas_regenerated': total_pcaptchas_regenerated,
+    }
+
+    return render_template_string('''
 <!DOCTYPE html>
 <html data-bs-theme="light" lang="en">
 
@@ -314,7 +308,6 @@ def sessions():
     <title>pCAPTCHA</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
-    <link rel="stylesheet" href="assets/css/Navbar-Right-Links-Dark-icons.css">
 </head>
 
 <body style="background: var(--bs-secondary-text-emphasis);">
@@ -338,7 +331,7 @@ def sessions():
                 <div class="text-center d-flex flex-column justify-content-center align-items-center py-3">
                     <div class="bs-icon-xl bs-icon-circle bs-icon-primary d-flex flex-shrink-0 justify-content-center align-items-center d-inline-block mb-2 bs-icon lg" style="background: var(--bs-indigo);"><i class="fa fa-database"></i></div>
                     <div class="px-3">
-                        <h2 class="fw-bold mb-0">{len(session_records)}</h2>
+                        <h2 class="fw-bold mb-0">{{stats.total_session_count}}</h2>
                         <p class="mb-0">Sessions</p>
                     </div>
                 </div>
@@ -349,7 +342,7 @@ def sessions():
                 <div class="text-center d-flex flex-column justify-content-center align-items-center py-3">
                     <div class="bs-icon-xl bs-icon-circle bs-icon-primary d-flex flex-shrink-0 justify-content-center align-items-center d-inline-block mb-2 bs-icon lg" style="background: var(--bs-indigo);"><i class="fa fa-image"></i></div>
                     <div class="px-3">
-                        <h2 class="fw-bold mb-0">{total_pcaptchas_generated}</h2>
+                        <h2 class="fw-bold mb-0">{{stats.total_pcaptchas_generated}}</h2>
                         <p class="mb-0">pCAPTCHAs Generated</p>
                     </div>
                 </div>
@@ -358,7 +351,7 @@ def sessions():
                 <div class="text-center d-flex flex-column justify-content-center align-items-center py-3">
                     <div class="bs-icon-xl bs-icon-circle bs-icon-primary d-flex flex-shrink-0 justify-content-center align-items-center d-inline-block mb-2 bs-icon lg" style="background: var(--bs-yellow);"><i class="fa fa-rotate-right"></i></div>
                     <div class="px-3">
-                        <h2 class="fw-bold mb-0">{total_pcaptchas_regenerated}</h2>
+                        <h2 class="fw-bold mb-0">{{stats.total_pcaptchas_regenerated}}</h2>
                         <p class="mb-0">pCAPTCHAs Regenerated</p>
                     </div>
                 </div>
@@ -369,7 +362,7 @@ def sessions():
                             <path d="M12.736 3.97a.733.733 0 0 1 1.047 0c.286.289.29.756.01 1.05L7.88 12.01a.733.733 0 0 1-1.065.02L3.217 8.384a.757.757 0 0 1 0-1.06.733.733 0 0 1 1.047 0l3.052 3.093 5.4-6.425a.247.247 0 0 1 .02-.022"></path>
                         </svg></div>
                     <div class="px-3">
-                        <h2 class="fw-bold mb-0">{total_pcaptchas_solved}</h2>
+                        <h2 class="fw-bold mb-0">{{stats.total_pcaptchas_solved}}</h2>
                         <p class="mb-0">pCAPTCHAs Solved</p>
                     </div>
                 </div>
@@ -380,7 +373,7 @@ def sessions():
                             <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708"></path>
                         </svg></div>
                     <div class="px-3">
-                        <h2 class="fw-bold mb-0">{total_pcaptchas_failed}</h2>
+                        <h2 class="fw-bold mb-0">{{stats.total_pcaptchas_failed}}</h2>
                         <p class="mb-0">pCAPTCHAs Failed</p>
                     </div>
                 </div>
@@ -400,7 +393,15 @@ def sessions():
                     </tr>
                 </thead>
                 <tbody style="background: var(--bs-body-color);">
-                    {html_rows}
+                    {% for record in records %}
+                        <tr>
+                            <td style="background: var(--bs-body-color);color: var(--bs-table-bg);border-color: var(--bs-table-color);">{{record.session_id}}</td>
+                            <td style="background: var(--bs-body-color);color: var(--bs-table-bg);border-color: var(--bs-table-color);">{{record.captchas_generated}}</td>
+                            <td style="background: var(--bs-body-color);color: var(--bs-table-bg);border-color: var(--bs-table-color);">{{record.captchas_solved}}</td>
+                            <td style="background: var(--bs-body-color);color: var(--bs-table-bg);border-color: var(--bs-table-color);">{{record.captchas_failed}}</td>
+                            <td style="background: var(--bs-body-color);color: var(--bs-table-bg);border-color: var(--bs-table-color);">{{record.created_at}} GMT</td>
+                        </tr>
+                    {% endfor %}
                 </tbody>
             </table>
         </div>
@@ -409,25 +410,36 @@ def sessions():
 </body>
 
 </html>
-'''
+''', stats=session_stats, records=session_records)
 
 @app.route('/mouse-movement')
 def mouse_movement():
+    """Show the mouse path of attempts."""
     # Fetch attempt data from the database
-    total_pcaptchas_generated = db.session.query(func.sum(CAPTCHA_Analytics.captchas_generated)).scalar() or 0
-    total_pcaptchas_solved = db.session.query(func.sum(CAPTCHA_Analytics.captchas_solved)).scalar() or 0
-    total_pcaptchas_failed = db.session.query(func.sum(CAPTCHA_Analytics.captchas_failed)).scalar() or 0
+    results = db.session.execute(
+        db.select(
+            func.sum(CAPTCHA_Analytics.captchas_generated),
+            func.sum(CAPTCHA_Analytics.captchas_solved),
+            func.sum(CAPTCHA_Analytics.captchas_failed)
+        )
+    ).first()
+
+    total_pcaptchas_generated, total_pcaptchas_solved, total_pcaptchas_failed = results
     total_pcaptchas_regenerated = total_pcaptchas_generated - (total_pcaptchas_solved + total_pcaptchas_failed)
+
+    # Fetch mouse movement data
+    mouse_and_success_data = db.session.execute(db.select(CAPTCHA_Attempt.mouse_movements, CAPTCHA_Attempt.success)).all()
     
-    # Fetch all mouse movement data from the database
-    data = db.session.query(CAPTCHA_Analytics).all()
-    
+    # Loop through mouse
     images = []
-    for row in data:
-        for attempts in row.attempts:
-            image_base64 = create_base64_image(attempts["mouse_movements"], attempts["success"])
-            if image_base64:
-                images.append(image_base64)
+
+    # Create a pool of workers
+    with multiprocessing.Pool() as pool:
+        # Process the data in parallel
+        results = pool.map(process_mouse_movement, mouse_and_success_data)
+
+    # Filter out None results and append valid images
+    images = [image for image in results if image is not None]
 
     return render_template_string('''
 <!DOCTYPE html>

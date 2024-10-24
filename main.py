@@ -8,7 +8,7 @@ import uuid
 from io import BytesIO
 from flask import Flask, jsonify, request, Response, session
 from PIL import Image, ImageDraw, ImageFilter
-from models import db, CAPTCHA, CAPTCHA_Analytics
+from models import db, CAPTCHA, CAPTCHA_Analytics, CAPTCHA_Attempt
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///captchas.db'
@@ -53,8 +53,8 @@ neon_colors = [
     (255, 140, 0, 200)    # Neon Dark Orange
 ]
 
-# Initialize CAPTCHA Analytics if the session is new
 def init_captcha_analytics():
+    """Initialize CAPTCHA Analytics if the session is new."""
     if 'session_id' not in session:
         session['session_id'] = str(uuid.uuid4())
         analytics = CAPTCHA_Analytics(session_id=session['session_id'])
@@ -234,19 +234,12 @@ def generate_puzzle_piece():
     analytics.captchas_generated += 1
 
     # Create a new attempt for the CAPTCHA
-    new_attempt = {
-        "presented_at": datetime.datetime.utcnow().isoformat(),
-        "completed_at": None,
-        "success": None,
-        "time_taken": None,
-        "mouse_movements": []
-    }
+    new_attempt = CAPTCHA_Attempt(session_id=session['session_id'], captcha_id=captcha.id)
 
-    # Append the new attempt to the attempts list
-    if analytics.attempts is None:
-        analytics.attempts = []
-    analytics.attempts.append(new_attempt)
-
+    db.session.add(new_attempt)
+    
+    # Get the uuid of the newly added captcha
+    captcha_uuid = captcha.id
     db.session.commit()
 
     # Retrieve a random background image for the puzzle with a size of 250x250
@@ -279,13 +272,13 @@ def generate_puzzle_piece():
     img = Image.alpha_composite(background, blurred_piece)
 
     # Save the image to the static folder
-    img_path = os.path.join('static', f'puzzle_{captcha.id}.png')
+    img_path = os.path.join('static', f'puzzle_{captcha_uuid}.png')
     img.save(img_path)
 
     # Return the image path and the CAPTCHA ID to later be sent by the client
     return jsonify({
         'success': True,
-        'captcha_id': captcha.id,
+        'captcha_id': captcha_uuid,
         'image': f'{request.url_root}{img_path}'
     })
 
@@ -320,49 +313,38 @@ def check_position():
         if analytics is not None:
             analytics.captchas_solved += 1
 
-            # Update the last attempt with the completion time and success status
-            if analytics.attempts:  # Check if there are any attempts
-                last_attempt_index = -1  # Get the last attempt
-                last_attempt = analytics.attempts[last_attempt_index]
-
-                # Update the last attempt details
-                last_attempt["completed_at"] = datetime.datetime.utcnow().isoformat()
-                last_attempt["success"] = True
-                last_attempt["mouse_movements"] = mouse_movements
-
+            # Update the last attempt with the new data
+            attempt = db.session.query(CAPTCHA_Attempt).filter_by(session_id=session['session_id'], captcha_id=captcha_id).first()
+            if attempt:
+                attempt.completed_at = datetime.datetime.now(datetime.timezone.utc)
+                attempt.success = True
+                attempt.mouse_movements = mouse_movements
+                
                 # Calculate the time taken to solve the CAPTCHA
-                presented_at = datetime.datetime.fromisoformat(last_attempt["presented_at"])
-                completed_at = datetime.datetime.fromisoformat(last_attempt["completed_at"])
-                last_attempt["time_taken"] = (completed_at - presented_at).total_seconds()
-
-                # Reassign the modified attempts list back to analytics
-                analytics.attempts[last_attempt_index] = last_attempt  # Ensure SQLAlchemy tracks this change
-
-                print(last_attempt)
-
-        db.session.commit()
+                attempt.time_taken = (attempt.completed_at.replace(tzinfo=None) - attempt.presented_at.replace(tzinfo=None)).total_seconds()
+  
+            db.session.commit()
 
         return jsonify({'success': True, 'message': 'CAPTCHA solved!', 'token': token})
 
     else:
         # Increment captchas_failed count for the analytics
         analytics = db.session.query(CAPTCHA_Analytics).filter_by(session_id=session['session_id']).first()
-        analytics.captchas_failed += 1
 
-        # Update the last attempt with the completion time and success status
-        last_attempt = analytics.attempts[-1]  # Get the last attempt
-        last_attempt["completed_at"] = datetime.datetime.utcnow().isoformat()
-        last_attempt["success"] = False
-        last_attempt["mouse_movements"] = mouse_movements
-        print(last_attempt)
-        
-        # Calculate the time taken to solve the CAPTCHA
-        presented_at = datetime.datetime.fromisoformat(last_attempt["presented_at"])
-        completed_at = datetime.datetime.fromisoformat(last_attempt["completed_at"])
-        last_attempt["time_taken"] = (completed_at - presented_at).total_seconds()
-        print(last_attempt)
+        if analytics is not None:
+            analytics.captchas_failed += 1
 
-        db.session.commit()
+            # Update the last attempt with the completion time and success status
+            attempt = db.session.query(CAPTCHA_Attempt).filter_by(session_id=session['session_id'], captcha_id=captcha_id).first()
+            if attempt:
+                attempt.completed_at = datetime.datetime.now(datetime.timezone.utc)
+                attempt.success = False
+                attempt.mouse_movements = mouse_movements
+
+                # Calculate the time taken to fail the CAPTCHA
+                attempt.time_taken = (attempt.completed_at.replace(tzinfo=None) - attempt.presented_at.replace(tzinfo=None)).total_seconds()
+
+            db.session.commit()
 
         return jsonify({'success': False, 'message': 'CAPTCHA failed. Please try again.'})
 
