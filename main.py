@@ -272,6 +272,8 @@ def generate_puzzle_piece():
     img = Image.alpha_composite(background, blurred_piece)
 
     # Save the image to the static folder
+    if not os.path.exists('static'):
+        os.mkdir('static')
     img_path = os.path.join('static', f'puzzle_{captcha_uuid}.png')
     img.save(img_path)
 
