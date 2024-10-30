@@ -117,7 +117,7 @@ def pCaptcha_js():
 
     async function generatePuzzlePiece() {{
         const response = await fetch('{base_url}generate_puzzle_piece', {{
-            method: 'POST',
+            method: 'GET',
             headers: {{ 'Content-Type': 'application/json' }}
         }});
         const data = await response.json();
@@ -215,7 +215,7 @@ def pCaptcha_js():
 '''
     return Response(js_content, mimetype='application/javascript')
 
-@app.route('/generate_puzzle_piece', methods=['POST'])
+@app.route('/generate_puzzle_piece', methods=['GET'])
 def generate_puzzle_piece():
     """Generate a CAPTCHA puzzle piece."""
     # Ensure analytics is initialized for the session
