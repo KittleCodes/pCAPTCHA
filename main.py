@@ -117,7 +117,7 @@ def pCaptcha_js():
 
     async function generatePuzzlePiece() {{
         const response = await fetch('{base_url}generate_puzzle_piece', {{
-            method: 'POST',
+            method: 'GET',
             headers: {{ 'Content-Type': 'application/json' }}
         }});
         const data = await response.json();
@@ -215,7 +215,7 @@ def pCaptcha_js():
 '''
     return Response(js_content, mimetype='application/javascript')
 
-@app.route('/generate_puzzle_piece', methods=['POST'])
+@app.route('/generate_puzzle_piece', methods=['GET'])
 def generate_puzzle_piece():
     """Generate a CAPTCHA puzzle piece."""
     # Ensure analytics is initialized for the session
@@ -272,6 +272,8 @@ def generate_puzzle_piece():
     img = Image.alpha_composite(background, blurred_piece)
 
     # Save the image to the static folder
+    if not os.path.exists('static'):
+        os.mkdir('static')
     img_path = os.path.join('static', f'puzzle_{captcha_uuid}.png')
     img.save(img_path)
 
@@ -378,9 +380,10 @@ def verify_captcha():
     except jwt.InvalidTokenError:
         return jsonify({"success": False, "message": "Invalid token!"})
 
+# Database and app initialization
+with app.app_context():
+    db.create_all()
+
 if __name__ == '__main__':
-    # Create the database tables
-    with app.app_context():
-        db.create_all()
     # Run the Flask app
     app.run(host='0.0.0.0', port=5007, debug=True)
